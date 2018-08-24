@@ -25,6 +25,8 @@ import tensorflow as tf
 from google.protobuf import text_format
 import data_utils
 import time
+import pandas as pd
+import glob
 
 FLAGS = tf.flags.FLAGS
 # General flags.
@@ -48,6 +50,8 @@ tf.flags.DEFINE_string('ckpt', '',
 tf.flags.DEFINE_string('vocab_file', '', 'Vocabulary file.')
 tf.flags.DEFINE_string('save_dir', '',
                        'Used for "dump_emb" mode to save word embeddings.')
+tf.flags.DEFINE_string('eval_dir', '',
+                       'directory with sentences to evaluate')
 # sample mode flags.
 tf.flags.DEFINE_string('prefix', '',
                        'Used for "sample" mode to predict next words.')
@@ -119,8 +123,8 @@ def _LoadModel(gd_file, ckpt_file):
   return sess, t
 
 
-def _EvalSentences(dataset, vocab):
-  """Evaluate the log probability of the input sentence.
+def _EvalSentences(vocab):
+  """Evaluate the log probability of the input sentences in the directory
 
   Args:
     dataset: LM1BDataset object.
@@ -131,35 +135,49 @@ def _EvalSentences(dataset, vocab):
   current_step = t['global_step'].eval(session=sess)
   sys.stderr.write('Loaded step %d.\n' % current_step)
 
-  data_gen = dataset.get_batch(BATCH_SIZE, NUM_TIMESTEPS, forever=False)
-  perplexities = []
-
-  for i, (inputs, char_inputs, _, targets, weights) in enumerate(data_gen):
-    input_dict = {t['inputs_in']: inputs,
-                  t['targets_in']: targets,
-                  t['target_weights_in']: weights}
-    if 'char_inputs_in' in t:
-      input_dict[t['char_inputs_in']] = char_inputs
-    #log_perp = sess.run(t['log_perplexity_out'], feed_dict=input_dict)
-    softmax = sess.run(t['softmax_out'], feed_dict=input_dict)    
+  eval_files = glob.glob(os.path.join(FLAGS.eval_dir, '*.txt'))
+  for eval_file in eval_files:
+    print('Evaluating '+eval_file+'...')
+    start_time = time.time()
+    dataset = data_utils.LM1BDataset(eval_file, vocab)
+    data_gen = dataset.get_batch(BATCH_SIZE, NUM_TIMESTEPS, forever=False)
+    word_probabilities = []
+    words = []
     
-    #sys.stderr.write('char_inputs: %s\n' %
-    #  (' '.join([chr(x) for x in char_inputs[0][0]])+'\n'))    
-    
-    #sys.stderr.write('Input index: %s\n' % str(inputs[0][0]))      
-    #sys.stderr.write('Indexed item: %s\n' % vocab.id_to_word(inputs[0][0]))      
-    
-    #sys.stderr.write('Target index: %s\n' % str(targets[0][0]))      
-    #sys.stderr.write('Target item: %s\n' % vocab.id_to_word(targets[0][0]))      
+    for i, (inputs, char_inputs, _, targets, weights) in enumerate(data_gen):
+      
+      input_dict = {t['inputs_in']: inputs,
+                    t['targets_in']: targets,
+                    t['target_weights_in']: weights}
+      if 'char_inputs_in' in t:
+        input_dict[t['char_inputs_in']] = char_inputs
+      
+      log_perp = sess.run(t['log_perplexity_out'], feed_dict=input_dict)
+      softmax = sess.run(t['softmax_out'], feed_dict=input_dict) 
 
-    perplexity = -1 * np.log10(softmax[0,targets[0][0]] / np.sum(softmax))
-    #sys.stderr.write('Single-word perplexity: '+str(perplexity)+'\n')
-        
-    perplexities.append(perplexity)
+      # infer the quan   
+      
+      #sys.stderr.write('char_inputs: %s\n' %
+      #  (' '.join([chr(x) for x in char_inputs[0][0]])+'\n'))    
+      
+      #sys.stderr.write('Input index: %s\n' % str(inputs[0][0]))      
+      #sys.stderr.write('Indexed item: %s\n' % vocab.id_to_word(inputs[0][0]))      
+      
+      #sys.stderr.write('Target index: %s\n' % str(targets[0][0]))      
+      #sys.stderr.write('Target item: %s\n' % vocab.id_to_word(targets[0][0]))      
 
-  sys.stderr.write('Total perplexity: %s\n' % str(np.sum(perplexities)))      
-  sys.stderr.write('Elapsed: %s\n' % str(time.time() - start_time))      
-  return(np.sum(perplexities))
+      log10_probability = -1 * np.log10(softmax[0,targets[0][0]] / np.sum(softmax))
+      sys.stderr.write(vocab.id_to_word(targets[0][0])+' '+str(log10_probability)+'\n')
+      
+      words.append(vocab.id_to_word(targets[0][0]))          
+      word_probabilities.append(log10_probability)
+
+    sys.stderr.write('Sentence perplexity: %s\n' % str(np.sum(word_probabilities)))      
+    sys.stderr.write('Elapsed: %s\n' % str(time.time() - start_time))      
+    
+    rdf = pd.DataFrame({'prob':word_probabilities, 'word':words})
+    rdf.to_csv(eval_file.replace('.txt','.out'))
+
 
 def _EvalModel(dataset):
   """Evaluate model perplexity using provided dataset.
@@ -172,7 +190,7 @@ def _EvalModel(dataset):
   current_step = t['global_step'].eval(session=sess)
   sys.stderr.write('Loaded step %d.\n' % current_step)
 
-  data_gen = dataset.get_batch(BATCH_SIZE, NUM_TIMESTEPS, forever=False)
+  data_gen = dataset.get_batch(BATCH_SIZE, NUM_TIMESTEPS, forever=False)  
   sum_num = 0.0
   sum_den = 0.0
   perplexity = 0.0
@@ -184,6 +202,10 @@ def _EvalModel(dataset):
     if 'char_inputs_in' in t:
       input_dict[t['char_inputs_in']] = char_inputs
     log_perp = sess.run(t['log_perplexity_out'], feed_dict=input_dict)
+
+    import pdb
+    pdb.set_trace()
+    print('Should be stopping for pdb')
 
     if np.isnan(log_perp):
       sys.stderr.error('log_perplexity is Nan.\n')
@@ -201,9 +223,8 @@ def _EvalModel(dataset):
                      (' '.join([chr(x) for x in char_inputs[0][0]])+'\n'))    
     sys.stderr.write('Single-word perplexity: '+str(-1 * np.log10(np.exp(-1*log_perp)))+'\n')
     
-
-    if i > FLAGS.max_eval_steps:
-      break
+    import pdb
+    pdb.set_trace()
 
 
 def _SampleSoftmax(softmax):
@@ -254,10 +275,12 @@ def _SampleModel(prefix_words, vocab):
         samples = [sample]
         char_ids_samples = [sample_char_ids]
       sent += vocab.id_to_word(samples[0]) + ' '
-      sys.stderr.write('%s\n' % sent)
+      #print('Writing out sent')      
+      #sys.stderr.write('%s\n' % sent)
 
       if (vocab.id_to_word(samples[0]) == '</S>' or
           len(sent) > FLAGS.max_sample_words):
+        sys.stdout.write('%s\n' % sent)
         break
 
 
@@ -351,8 +374,8 @@ def main(unused_argv):
   elif FLAGS.mode == 'dump_lstm_emb':
     _DumpSentenceEmbedding(FLAGS.sentence, vocab)
   elif FLAGS.mode == 'eval_sentences':
-    dataset = data_utils.LM1BDataset(FLAGS.input_data, vocab)        
-    _EvalSentences(dataset, vocab)
+    # vocab is set once above            
+    _EvalSentences(vocab)
   else:
     raise Exception('Mode not supported.')
 
