@@ -220,16 +220,22 @@ class LM1BDataset(object):
   The current implementation reads the data from the tokenized text files.
   """
 
-  def __init__(self, filepattern, vocab):
+  def __init__(self, filepattern = None, vocab = None):
     """Initialize LM1BDataset reader.
 
     Args:
       filepattern: Dataset file pattern.
       vocab: Vocabulary.
+
+    SM updated to permit on-the-fly dataset conversion
     """
     self._vocab = vocab
-    self._all_shards = tf.gfile.Glob(filepattern)
-    tf.logging.info('Found %d shards at %s', len(self._all_shards), filepattern)
+    if filepattern:
+      print('Loaded LM1B in file shard mode')
+      self._all_shards = tf.gfile.Glob(filepattern)
+      tf.logging.info('Found %d shards at %s', len(self._all_shards), filepattern)
+    else:
+      print('Loaded LM1B in conversion mode')
 
   def _load_random_shard(self):
     """Randomly select a file and read it."""
@@ -247,6 +253,11 @@ class LM1BDataset(object):
     tf.logging.info('Loading data from: %s', shard_name)
     with tf.gfile.Open(shard_name) as f:
       sentences = f.readlines()
+
+    return(self._convert_sentences(sentences))
+    
+  def _convert_sentences(self, sentences):
+    # SM refactored to expose this directly from get_sentence
     chars_ids = [self.vocab.encode_chars(sentence) for sentence in sentences]
     ids = [self.vocab.encode(sentence) for sentence in sentences]
 
@@ -262,16 +273,19 @@ class LM1BDataset(object):
     tf.logging.info('Finished loading')
     return zip(ids, chars_ids, global_word_ids)
 
-  def _get_sentence(self, forever=True):
+  def _get_sentence(self, forever=True, method='file'):
     while True:
-      ids = self._load_random_shard()
+      if method == 'file':
+        ids = self._load_random_shard()        
+      elif method == 'list':
+        ids = self._convert_sentences([self.sentence])      
       for current_ids in ids:
         yield current_ids
       if not forever:
         break
 
-  def get_batch(self, batch_size, num_steps, pad=False, forever=True):
-    return get_batch(self._get_sentence(forever), batch_size, num_steps,
+  def get_batch(self, batch_size, num_steps, method, pad=False, forever=True):
+    return get_batch(self._get_sentence(forever, method), batch_size, num_steps,
                      self.vocab.max_word_length, pad=pad)
 
   @property
